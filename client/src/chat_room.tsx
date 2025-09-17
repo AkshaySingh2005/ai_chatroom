@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent } from "react";
+import { useState, useEffect, FormEvent, useRef } from "react";
 import {
   Room,
   RoomEvent,
@@ -36,6 +36,16 @@ export default function ChatRoom({
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isConnected, setIsConnected] = useState(false);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   // Connect to LiveKit room
   useEffect(() => {
@@ -87,10 +97,7 @@ export default function ChatRoom({
 
   const updateParticipants = (room: Room) => {
     const participants = Array.from(room.remoteParticipants.values());
-    const allParticipants = [
-      room.localParticipant,
-      ...participants,
-    ];
+    const allParticipants = [room.localParticipant, ...participants];
     setParticipants(allParticipants);
   };
 
@@ -178,8 +185,9 @@ export default function ChatRoom({
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-900 text-white">
-      <div className="bg-zinc-800 p-4 flex justify-between items-center">
+    <div className="flex flex-col h-screen bg-zinc-900 text-white">
+      {/* Fixed header */}
+      <div className="bg-zinc-800 p-4 flex justify-between items-center shadow-md">
         <div>
           <h2 className="text-xl font-bold">{roomName}</h2>
           <div className="text-sm text-zinc-400">
@@ -191,10 +199,11 @@ export default function ChatRoom({
         </Button>
       </div>
 
+      {/* Main content - fixed height, scrollable chat */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Participants sidebar */}
+        {/* Participants sidebar - scrollable independently */}
         <div className="w-64 bg-zinc-800 p-4 overflow-y-auto">
-          <h3 className="text-sm font-semibold text-zinc-400 mb-2">
+          <h3 className="text-sm font-semibold text-zinc-400 mb-2 sticky top-0 bg-zinc-800 py-1">
             PARTICIPANTS
           </h3>
           <ul className="space-y-1">
@@ -221,10 +230,13 @@ export default function ChatRoom({
           </ul>
         </div>
 
-        {/* Chat area */}
+        {/* Chat area - with fixed layout */}
         <div className="flex-1 flex flex-col">
-          {/* Messages */}
-          <div className="flex-1 p-4 overflow-y-auto">
+          {/* Messages - scrollable */}
+          <div
+            className="flex-1 p-4 overflow-y-auto"
+            style={{ scrollbarWidth: "thin" }}
+          >
             {messages.length === 0 ? (
               <div className="text-center text-zinc-500 mt-8">
                 No messages yet. Start the conversation!
@@ -254,14 +266,16 @@ export default function ChatRoom({
                     </div>
                   </div>
                 ))}
+                {/* Invisible element to scroll to */}
+                <div ref={messagesEndRef} />
               </div>
             )}
           </div>
 
-          {/* Input area */}
+          {/* Input area - fixed at bottom */}
           <form
             onSubmit={handleSendMessage}
-            className="bg-zinc-800 p-4 flex gap-2"
+            className="bg-zinc-800 p-4 flex gap-2 shadow-inner"
           >
             <input
               type="text"
@@ -283,3 +297,4 @@ export default function ChatRoom({
     </div>
   );
 }
+
