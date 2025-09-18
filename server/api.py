@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from llm import generate_response
-from memory import get_memory_manager, ChatMessage
+from semantic_memory import get_semantic_memory
 
 from chatroom.liveKit import (
     create_room,
@@ -29,7 +29,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     user_id: str
     message: str
-    room_id: Optional[str] = None  # Added room_id to track conversation context
+    room_id: Optional[str] = None
 
 class RoomRequest(BaseModel):
     room_name: str
@@ -70,36 +70,24 @@ async def chat_endpoint(chat: ChatRequest):
     
     # Store both user message and AI response if room_id is provided
     if chat.room_id:
-        memory_manager = get_memory_manager()
-        room_memory = memory_manager.get_room_memory(chat.room_id)
+        memory = get_semantic_memory()
         
         # Store user message
-        room_memory.add_message(chat.user_id, chat.message)
+        memory.add_memory(chat.room_id, chat.user_id, chat.message)
         
         # Store AI response
-        room_memory.add_message("AI Assistant", response, is_ai=True)
+        memory.add_memory(chat.room_id, "AI Assistant", response, is_ai=True)
     
     return {"response": response}
+
 
 # New endpoint to get chat history for a room
 @app.get("/rooms/{room_id}/history")
 async def get_room_history(room_id: str, limit: int = 50):
-    memory_manager = get_memory_manager()
-    room_memory = memory_manager.get_room_memory(room_id)
-    messages = room_memory.get_recent_messages(limit)
+    memory = get_semantic_memory()
+    messages = memory.get_room_history(room_id, limit)
     
-    # Format messages for the response
-    formatted_messages = []
-    for i, msg in enumerate(messages):
-        formatted_messages.append({
-            "id": f"{msg.timestamp.timestamp()}-{i}",
-            "sender": msg.sender,
-            "text": msg.text,
-            "timestamp": msg.timestamp.isoformat(),
-            "is_ai": msg.is_ai
-        })
-    
-    return {"messages": formatted_messages}
+    return {"messages": messages}
 
 # LiveKit room management
 @app.post("/rooms")
@@ -126,8 +114,8 @@ async def delete_room_endpoint(room_name: str):
         success = await delete_room(room_name)
         if success:
             # Also delete room memory when room is deleted
-            memory_manager = get_memory_manager()
-            memory_manager.delete_room_memory(room_name)
+            memory = get_semantic_memory()
+            memory.delete_room_memories(room_name)
             return {"success": True}
         raise HTTPException(status_code=500, detail="Failed to delete room")
     except Exception as e:

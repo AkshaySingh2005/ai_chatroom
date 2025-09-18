@@ -1,7 +1,7 @@
 import os
 import google.generativeai as genai
 from dotenv import load_dotenv
-from memory import get_memory_manager
+from semantic_memory import get_semantic_memory
 
 load_dotenv()
 
@@ -13,9 +13,11 @@ def generate_response(user_message: str, room_id: str = "") -> str:
     # Get chat history context if room_id is provided
     memory_context = ""
     if room_id:
-        memory_manager = get_memory_manager()
-        room_memory = memory_manager.get_room_memory(room_id)
-        memory_context = room_memory.get_context_for_ai()
+        # Use semantic memory to get semantically relevant context
+        memory = get_semantic_memory()
+        # Clean up the user message by removing @AI for context searching
+        clean_query = user_message.replace('@AI', '').strip()
+        memory_context = memory.get_relevant_context(room_id, clean_query)
     
     prompt = f"""
     You are an AI assistant in a multi-user chat room application.
@@ -26,7 +28,7 @@ def generate_response(user_message: str, room_id: str = "") -> str:
     - You're part of a group chat with multiple human participants
     - Keep responses relatively brief (1-3 paragraphs max) to maintain chat flow
     
-    # Previous Conversation Context:
+    # Previous Conversation Context (Semantically Relevant):
     {memory_context}
     
     # The user's message (without the @AI mention):
