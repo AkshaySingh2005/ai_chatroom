@@ -1,127 +1,164 @@
 import os
+import chromadb
+import uuid
 from datetime import datetime
-import json
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+from sentence_transformers import SentenceTransformer
 
+# Directory for storing ChromaDB data
+CHROMA_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "chroma_db"
 
-HISTORY_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "chat_history"
-
-
-if not HISTORY_DIR.exists():
-    HISTORY_DIR.mkdir(parents=True)
-
-class ChatMessage:
-    def __init__(self, sender: str, text: str, timestamp: Optional[datetime] = None, is_ai: bool = False):
-        self.sender = sender
-        self.text = text
-        self.timestamp = timestamp or datetime.now()
-        self.is_ai = is_ai
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "sender": self.sender,
-            "text": self.text,
-            "timestamp": self.timestamp.isoformat(),
-            "is_ai": self.is_ai
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ChatMessage':
-        return cls(
-            sender=data["sender"],
-            text=data["text"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
-            is_ai=data.get("is_ai", False)
-        )
-
-class RoomMemory:
-    def __init__(self, room_id: str):
-        self.room_id = room_id
-        self.file_path = HISTORY_DIR / f"{room_id}.json"
-        self.messages = self._load_messages()
-    
-    def _load_messages(self) -> List[ChatMessage]:
-        if not self.file_path.exists():
-            return []
-        
-        try:
-            with open(self.file_path, "r") as f:
-                data = json.load(f)
-                return [ChatMessage.from_dict(msg) for msg in data]
-        except Exception as e:
-            print(f"Error loading messages for room {self.room_id}: {e}")
-            return []
-    
-    def _save_messages(self) -> None:
-        try:
-            with open(self.file_path, "w") as f:
-                json.dump([msg.to_dict() for msg in self.messages], f)
-        except Exception as e:
-            print(f"Error saving messages for room {self.room_id}: {e}")
-    
-    def add_message(self, sender: str, text: str, is_ai: bool = False) -> None:
-        """Add a message to the room's chat history"""
-        message = ChatMessage(sender, text, is_ai=is_ai)
-        self.messages.append(message)
-        self._save_messages()
-    
-    def get_recent_messages(self, limit: int = 50) -> List[ChatMessage]:
-        """Get the most recent messages for the room"""
-        return self.messages[-limit:] if self.messages else []
-    
-    def get_context_for_ai(self, max_messages: int = 10) -> str:
-        """Format recent messages as context for the AI"""
-        recent_messages = self.get_recent_messages(max_messages)
-        if not recent_messages:
-            return "No previous conversation in this room."
-        
-        context_lines = ["Recent conversation:"]
-        for msg in recent_messages:
-            prefix = "[AI]" if msg.is_ai else f"[{msg.sender}]"
-            timestamp = msg.timestamp.strftime("%H:%M:%S")
-            context_lines.append(f"{timestamp} {prefix} {msg.text}")
-        
-        return "\n".join(context_lines)
-    
-    def clear_history(self) -> None:
-        """Clear the room's chat history"""
-        self.messages = []
-        self._save_messages()
-
-# Singleton-like memory manager for accessing room memories
-class MemoryManager:
+class SemanticMemory:
     _instance = None
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._rooms = {}
+            cls._instance._initialize()
         return cls._instance
     
-    def get_room_memory(self, room_id: str) -> RoomMemory:
-        """Get or create a memory object for a specific room"""
-        if room_id not in self._rooms:
-            self._rooms[room_id] = RoomMemory(room_id)
-        return self._rooms[room_id]
-    
-    def delete_room_memory(self, room_id: str) -> None:
-        """Delete a room's memory when the room is deleted"""
-        if room_id in self._rooms:
-            del self._rooms[room_id]
+    def _initialize(self):
+        """Initialize the semantic memory service"""
+        # Create ChromaDB client
+        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         
-        # Remove file if it exists
-        file_path = HISTORY_DIR / f"{room_id}.json"
-        if file_path.exists():
-            file_path.unlink()
+        # Create or get collection
+        self.collection = self.client.get_or_create_collection("chat_memories")
+        
+        # Load the sentence transformer model
+        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        
+        # Dictionary to track room-specific contexts
+        self.room_contexts = {}
     
-    def list_rooms(self) -> List[str]:
-        """List all rooms that have memory files"""
-        return [f.stem for f in HISTORY_DIR.glob("*.json")]
+    def add_memory(self, room_id: str, user_id: str, text: str, is_ai: bool = False) -> str:
+        """Add a new memory to the semantic database"""
+        # Generate a unique ID for this memory
+        memory_id = str(uuid.uuid4())
+        
+        # Create metadata
+        metadata = {
+            "room_id": room_id,
+            "sender": "AI Assistant" if is_ai else user_id,
+            "is_ai": "true" if is_ai else "false",  # ChromaDB requires string values
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Add to collection
+        self.collection.add(
+            documents=[text],
+            metadatas=[metadata],
+            ids=[memory_id]
+        )
+        
+        # Update room context tracking
+        if room_id not in self.room_contexts:
+            self.room_contexts[room_id] = {
+                "last_active": datetime.now(),
+                "participants": set()
+            }
+        
+        if not is_ai:
+            self.room_contexts[room_id]["participants"].add(user_id)
+        
+        self.room_contexts[room_id]["last_active"] = datetime.now()
+        
+        return memory_id
+    
+    def get_relevant_context(self, room_id: str, query: str, limit: int = 5) -> str:
+        """Retrieve relevant context based on semantic search"""
+        # Search for relevant memories
+        results = self.collection.query(
+            query_texts=[query],
+            where={"room_id": room_id},
+            n_results=limit
+        )
+        
+        # No results
+        if not results or not results["documents"] or len(results["documents"][0]) == 0:
+            return "No previous conversation in this room."
+        
+        # Format context for LLM
+        context_lines = ["Recent and relevant conversation:"]
+        
+        for i, doc in enumerate(results["documents"][0]):
+            metadata = results["metadatas"][0][i]
+            sender = metadata.get("sender", "Unknown")
+            is_ai = metadata.get("is_ai", "false") == "true"
+            
+            try:
+                timestamp = datetime.fromisoformat(metadata.get("timestamp", datetime.now().isoformat()))
+                time_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                time_str = "Unknown time"
+            
+            prefix = "[AI]" if is_ai else f"[{sender}]"
+            context_lines.append(f"{time_str} {prefix} {doc}")
+        
+        return "\n".join(context_lines)
+    
+    def get_room_history(self, room_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieve chat history for a room chronologically"""
+        # Get all messages for the room
+        results = self.collection.query(
+            query_texts=[""],  # Empty query to match everything
+            where={"room_id": room_id},
+            n_results=limit
+        )
+        
+        # Format as list of message dictionaries
+        messages = []
+        if not results or not results["documents"] or len(results["documents"][0]) == 0:
+            return messages
+        
+        for i, doc in enumerate(results["documents"][0]):
+            metadata = results["metadatas"][0][i]
+            memory_id = results["ids"][0][i]
+            
+            try:
+                timestamp = datetime.fromisoformat(metadata.get("timestamp", datetime.now().isoformat()))
+            except:
+                timestamp = datetime.now()
+            
+            messages.append({
+                "id": memory_id,
+                "sender": metadata.get("sender", "Unknown"),
+                "text": doc,
+                "is_ai": metadata.get("is_ai", "false") == "true",
+                "timestamp": timestamp.isoformat()
+            })
+        
+        # Sort by timestamp
+        messages.sort(key=lambda x: x["timestamp"])
+        
+        return messages
+    
+    def delete_room_memories(self, room_id: str) -> None:
+        """Delete all memories for a specific room"""
+        # Find all memories for this room
+        results = self.collection.query(
+            query_texts=[""],
+            where={"room_id": room_id},
+            n_results=1000  # Set a high limit to get all
+        )
+        
+        if results and results["ids"] and len(results["ids"][0]) > 0:
+            # Delete the memories
+            self.collection.delete(ids=results["ids"][0])
+        
+        # Remove room context
+        if room_id in self.room_contexts:
+            del self.room_contexts[room_id]
 
-# Create a singleton instance
-memory_manager = MemoryManager()
+# Singleton instance
+semantic_memory = SemanticMemory()
 
-def get_memory_manager() -> MemoryManager:
-    """Get the memory manager instance"""
-    return memory_manager
+def get_semantic_memory() -> SemanticMemory:
+    """Get the semantic memory service instance"""
+    return semantic_memory
+
+# Backwards compatibility with old memory manager
+def get_memory_manager():
+    """Legacy function for compatibility"""
+    return get_semantic_memory()

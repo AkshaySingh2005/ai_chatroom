@@ -1,8 +1,8 @@
 import { useState } from "react";
 
 import "./styles/globals.css";
-import Lobby from "./chat_lobby";
-import ChatRoom from "./chat_room";
+import Lobby from "./lobby/chat_lobby";
+import ChatRoom from "./room/chat_room";
 
 function App() {
   const [currentRoom, setCurrentRoom] = useState<{
