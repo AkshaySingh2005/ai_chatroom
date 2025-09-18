@@ -25,6 +25,7 @@ export default function ChatRoom({ token, roomName, username, onLeaveRoom }: Cha
   const [inputMessage, setInputMessage] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [isAITyping, setIsAITyping] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   
   // Add a ref to the messages container for scrolling
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -37,6 +38,41 @@ export default function ChatRoom({ token, roomName, username, onLeaveRoom }: Cha
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Fetch message history when component mounts
+  useEffect(() => {
+    const fetchMessageHistory = async () => {
+      if (!roomName) return;
+      
+      setIsLoadingHistory(true);
+      try {
+        const response = await fetch(`http://localhost:8000/rooms/${roomName}/history`);
+        if (response.ok) {
+          const data = await response.json();
+          const historyMessages = data.messages.map((msg: {
+            id: string;
+            sender: string;
+            text: string;
+            is_ai: boolean;
+            timestamp: string;
+          }) => ({
+            id: msg.id,
+            sender: msg.sender,
+            text: msg.text,
+            isAI: msg.is_ai,
+            timestamp: new Date(msg.timestamp)
+          }));
+          setMessages(historyMessages);
+        }
+      } catch (error) {
+        console.error("Error fetching message history:", error);
+      } finally {
+        setIsLoadingHistory(false);
+      }
+    };
+
+    fetchMessageHistory();
+  }, [roomName]);
 
   // Connect to LiveKit room
   useEffect(() => {
@@ -76,8 +112,6 @@ export default function ChatRoom({ token, roomName, username, onLeaveRoom }: Cha
                 
                 if (data.message.includes('@AI') && !data.isAI && participant?.identity !== 'AI Assistant') {
                   console.log("@AI mention detected, calling AI");
-                  // Don't call handleAIResponse here - we handle it in our own message send flow
-                  // This is to prevent duplicate AI responses when multiple clients are connected
                   
                   // Only the original sender should trigger the AI response
                   if (participant?.identity === username) {
@@ -111,7 +145,7 @@ export default function ChatRoom({ token, roomName, username, onLeaveRoom }: Cha
     };
   }, [token, username]);
 
-const updateParticipants = (room: Room) => {
+  const updateParticipants = (room: Room) => {
     const participants = Array.from(room.remoteParticipants.values());
     const allParticipants = [room.localParticipant, ...participants];
     setParticipants(allParticipants);
@@ -137,7 +171,8 @@ const updateParticipants = (room: Room) => {
         },
         body: JSON.stringify({
           user_id: username,
-          message: query
+          message: query,
+          room_id: roomName  // Send room name for context tracking
         }),
       });
 
@@ -225,6 +260,23 @@ const updateParticipants = (room: Room) => {
     // Send message to room
     room.localParticipant.publishData(encoder.encode(JSON.stringify(message)), { reliable: true });
     
+    // Save message to server for history (even without AI)
+    try {
+      await fetch('http://localhost:8000/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: username,
+          message: inputMessage,
+          room_id: roomName  // Store in room history
+        }),
+      });
+    } catch (error) {
+      console.error("Error saving message to history:", error);
+    }
+    
     // IMPORTANT: Check here directly if we need to call the AI
     // This ensures we handle AI requests directly when sending the message
     if (inputMessage.includes('@AI')) {
@@ -305,12 +357,31 @@ const updateParticipants = (room: Room) => {
         <div className="flex-1 flex flex-col">
           {/* Messages - scrollable */}
           <div className="flex-1 p-4 overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
-            {messages.length === 0 ? (
+            {isLoadingHistory ? (
+              <div className="text-center text-zinc-500 mt-8">
+                Loading message history...
+              </div>
+            ) : messages.length === 0 ? (
               <div className="text-center text-zinc-500 mt-8">
                 No messages yet. Start the conversation!
               </div>
             ) : (
               <div className="space-y-4">
+                {/* Historical messages separator */}
+                {messages.length > 0 && (
+                  <div className="relative py-2">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-zinc-700"></div>
+                    </div>
+                    <div className="relative flex justify-center">
+                      <span className="bg-zinc-900 px-2 text-xs text-zinc-500">
+                        Chat History
+                      </span>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Messages */}
                 {messages.map((msg) => (
                   <div 
                     key={msg.id} 
@@ -325,11 +396,17 @@ const updateParticipants = (room: Room) => {
                             : 'bg-zinc-700 text-white'
                       }`}
                     >
-                      <div className="text-xs text-zinc-300 mb-1">{msg.sender}</div>
+                      <div className="text-xs text-zinc-300 mb-1">
+                        {msg.sender}
+                        <span className="ml-2 text-zinc-400">
+                          {msg.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </span>
+                      </div>
                       <div>{msg.text}</div>
                     </div>
                   </div>
                 ))}
+                
                 {/* AI typing indicator */}
                 {isAITyping && (
                   <div className="flex justify-start">
